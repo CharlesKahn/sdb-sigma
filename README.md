@@ -1,22 +1,22 @@
 # SDB-sigma
 
-Audit your agent architecture. Find boundary failures before production does.
+Static gate scoring between LLM output and system commit.
 
 ## Why this exists
 
-If you're building agentic systems with tool use, you've probably hit this: the LLM calls a search tool, gets 24 results back, and passes 19 of them to the render tool. Or it skips the render tool entirely and summarizes the results in text. Or it drops 2 of 8 mandatory items from an order because it decided they weren't relevant.
+If you're building agentic systems with tool use, you've likely hit this: the LLM calls a search tool, gets 24 results back, and passes 19 of them to the render tool. Or it skips the render tool entirely and summarizes the results in text. Or it drops 2 of 8 mandatory items from an order because it decided they weren't relevant.
 
-You add "you MUST include all results" to the system prompt. It works 85% of the time. You make the instruction stronger. It works 92% of the time. You bold it, capitalize it, add "CRITICAL" and "non-negotiable." It works 95% of the time.
+You add "you MUST include all results" to the system prompt. That works 85% of the time. You make the instruction stronger. It works 92% of the time. Bold it, capitalize it, add "CRITICAL" and "non-negotiable.",...MAYBE 98%.
 
-5% of your orders are wrong. That's not a model problem. That's an architecture problem.
+2% of your orders are wrong. In fault-intolerant systems, this is not acceptable.
 
-The fix is not a better prompt. The fix is a deterministic gate between what the LLM proposes and what the system commits. A function that checks: did the render tool receive every ID the search tool returned? If not, swap in the correct set. The LLM never knows. The user never sees incomplete results.
+The fix is a deterministic gate between what the LLM proposes and what the system commits, with placement between the proposer and the commit. This lives in the data path itself and checks: did the render tool receive every ID the search tool returned? If not, swap in the correct set. The LLM never knows and the user never sees incomplete results.
 
 That gate is what this tool audits.
 
 ## The boundary
 
-Every production agent has points where stochastic LLM output becomes a deterministic system action. A tool call. A database write. A rendered UI component. [Srinivasan (2026)](https://arxiv.org/abs/2605.20173) names this the stochastic-deterministic boundary (SDB) and defines it as a four-part contract:
+Every production agent has points where stochastic LLM output becomes a deterministic system action. Tool callsm, database write, rendered components etc. One of the most useful whitepapers on the subject, [Srinivasan (2026)](https://arxiv.org/abs/2605.20173) names this the stochastic-deterministic boundary (SDB) and defines it as a four-part contract:
 
 ```
   LLM generates          deterministic            durable write
