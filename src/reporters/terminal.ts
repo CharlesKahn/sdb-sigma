@@ -7,11 +7,15 @@ import type {
 } from "../types";
 
 // Palette per spec.
+// `blue` is the deep NASA blue used for filled bar/dot/block surfaces.
+// `blueText` is a brighter blue used anywhere blue appears as inline text
+// (status labels, decorative ░░ glyphs in the gate map, warn bullets).
 const C = {
   white: chalk.hex("#e8ecf0"),
   grey: chalk.hex("#8c9aac"),
   green: chalk.hex("#3ECF8E"),
   blue: chalk.hex("#0d4280"),
+  blueText: chalk.hex("#1a60a8"),
   red: chalk.hex("#e83842"),
   divider: chalk.hex("#1a2028"),
   arrow: chalk.hex("#1e2830"),
@@ -129,6 +133,132 @@ function renderPattern(result: AnalysisResult): string {
   return lines.join("\n");
 }
 
+interface GateRow {
+  name: string;
+  gateText: string;
+  blockChar: string;
+  blockColor: (s: string) => string;
+  promote: boolean;
+}
+
+function findGateForBoundary(
+  boundaryName: string,
+  gates: string[],
+): string | undefined {
+  const tokens = boundaryName
+    .toLowerCase()
+    .split(/[-_]/)
+    .filter((t) => t.length >= 3);
+  if (tokens.length === 0) return undefined;
+  let best: { gate: string; overlap: number } | null = null;
+  for (const g of gates) {
+    const gLower = g.toLowerCase();
+    const overlap = tokens.reduce((n, t) => (gLower.includes(t) ? n + 1 : n), 0);
+    if (overlap > 0 && (best === null || overlap > best.overlap)) {
+      best = { gate: g, overlap };
+    }
+  }
+  return best?.gate;
+}
+
+function buildGateRows(result: AnalysisResult): GateRow[] {
+  const { config, boundaries, recommendations } = result;
+  return boundaries.map((b) => {
+    let blockChar: string;
+    let blockColor: (s: string) => string;
+    let gateText: string;
+
+    if (b.enforcement === "architectural") {
+      blockChar = "██";
+      blockColor = C.green;
+      gateText =
+        findGateForBoundary(b.name, config.control.gates) ?? "gate";
+    } else if (b.enforcement === "prompt-only") {
+      blockChar = "░░";
+      blockColor = C.blueText;
+      gateText = "prompt rule";
+    } else {
+      blockChar = "╌╌";
+      blockColor = C.red;
+      gateText = "nothing";
+    }
+
+    const promote = recommendations.some((r) => {
+      const t = r.title.toLowerCase();
+      return (
+        t.includes(b.name.toLowerCase()) &&
+        (t.includes("promote") || t.includes("architectural"))
+      );
+    });
+
+    return { name: b.name, gateText, blockChar, blockColor, promote };
+  });
+}
+
+function renderGateMap(result: AnalysisResult): string {
+  const rows = buildGateRows(result);
+  const lines: string[] = [];
+  lines.push(sectionLabel("gate map"));
+
+  if (rows.length === 0) {
+    lines.push("  " + C.grey("no boundaries declared"));
+    return lines.join("\n");
+  }
+
+  const maxName = Math.max(...rows.map((r) => r.name.length));
+  const maxGate = Math.max(...rows.map((r) => r.gateText.length));
+  const DASH_RUN = 10;
+
+  // Visible-column where the gate-text starts (used to align ▲ promote).
+  // Layout per row (visible):
+  //   "      " (6) + branch(2) + " " (1) + name(maxName) + " " (1) +
+  //   dashes(DASH_RUN) + " " (1) + block(2) + " " (1) + gate(maxGate)
+  const gateTextCol = 6 + 2 + 1 + maxName + 1 + DASH_RUN + 1 + 2 + 1;
+
+  lines.push("  " + C.grey("LLM proposes"));
+  lines.push("      " + C.grey("│"));
+
+  for (let i = 0; i < rows.length; i++) {
+    const r = rows[i];
+    const isLast = i === rows.length - 1;
+    const branch = isLast ? "└─" : "├─";
+
+    const namePadded = r.name + " ".repeat(maxName - r.name.length);
+    const gatePadded = r.gateText + " ".repeat(maxGate - r.gateText.length);
+    const block = r.blockColor(r.blockChar);
+    const dashes = C.grey("─".repeat(DASH_RUN));
+
+    lines.push(
+      "      " +
+        C.grey(branch) +
+        " " +
+        C.white(namePadded) +
+        " " +
+        dashes +
+        " " +
+        block +
+        " " +
+        C.white(gatePadded) +
+        " " +
+        block +
+        " " +
+        C.grey("── commit"),
+    );
+
+    if (r.promote) {
+      const cont = isLast ? " " : C.grey("│");
+      const padCount = Math.max(1, gateTextCol - 7);
+      lines.push("      " + cont + " ".repeat(padCount) + C.green("▲ promote"));
+    }
+
+    if (!isLast) {
+      lines.push("      " + C.grey("│"));
+    }
+  }
+
+  return lines.join("\n");
+}
+
 function renderScore(result: AnalysisResult): string {
   const score = result.summary.architectureScore;
   const filled = score; // 0..10
@@ -209,9 +339,15 @@ function renderPromptRules(result: AnalysisResult): string {
 
   lines.push("");
   for (const w of promptWarnings) {
-    const color = w.severity === "error" ? C.red : C.blue;
-    lines.push(`  ${color("·")} ${C.white(truncate(w.rule, 88))}`);
-    lines.push(`    ${C.grey("→ " + w.reason)}`);
+    const sevLabel =
+      w.severity === "error"
+        ? C.red("error")
+        : w.severity === "warn"
+          ? C.blueText("warn ")
+          : C.grey("info ");
+    const bullet = w.severity === "error" ? C.red("·") : C.blueText("·");
+    lines.push(`  ${bullet} ${sevLabel}  ${C.white(truncate(w.rule, 80))}`);
+    lines.push(`           ${C.grey("→ " + w.reason)}`);
   }
   return lines.join("\n");
 }
@@ -241,7 +377,7 @@ function renderToolGraph(result: AnalysisResult): string {
     const arrow = C.arrow(" ╌╌► ");
     const status = e.verified
       ? C.green("✓ verified")
-      : C.blue("◐ prompt-only or none");
+      : C.blueText("◐ prompt-only or none");
     lines.push(`  ${from}${arrow}${to}  ${status}`);
   }
   for (const c of toolGraph.cycles) {
@@ -264,6 +400,128 @@ function renderRecommendations(result: AnalysisResult): string {
     if (r.detail) lines.push("      " + C.grey(r.detail));
     if (i < result.recommendations.length - 1) lines.push("");
   }
+  return lines.join("\n");
+}
+
+const PATTERN_GLOSS: Record<string, string> = {
+  P1: "The parent agent delegates subtasks to child agents and verifies their output.",
+  P2: "Parallel workers fan out and a merge function validates the combined result.",
+  P3: "Events trigger the next steps and event schemas validate every transition.",
+  P4: "The agent proposes outputs and a deterministic gate decides what commits.",
+  P5: "Agents read and write a versioned shared state machine that validates each transition.",
+  P6: "The agent proposes and a human approves before any commit happens.",
+};
+
+function scoreDragDownPhrases(result: AnalysisResult): string[] {
+  const phrases: string[] = [];
+  const weakCount = result.boundaries.filter((b) => b.strength === "WEAK").length;
+  const promptOnlyCount = result.boundaries.filter(
+    (b) => b.strength === "MODERATE",
+  ).length;
+  const unverified = result.toolGraph.unverifiedTransitions.length;
+  const unprotected = result.promptWarnings.filter(
+    (w) => w.severity === "error" && !w.boundary,
+  ).length;
+  const mismatches = result.pattern.mismatches.length;
+
+  if (weakCount > 0)
+    phrases.push(`${weakCount} weak boundary${weakCount === 1 ? "" : "ies"}`);
+  if (promptOnlyCount > 0)
+    phrases.push(
+      `${promptOnlyCount} prompt-only boundary${promptOnlyCount === 1 ? "" : "ies"}`,
+    );
+  if (unverified > 0)
+    phrases.push(
+      `${unverified} unverified tool-graph transition${unverified === 1 ? "" : "s"}`,
+    );
+  if (unprotected > 0)
+    phrases.push(
+      `${unprotected} unprotected hard directive${unprotected === 1 ? "" : "s"}`,
+    );
+  if (mismatches > 0)
+    phrases.push(
+      `${mismatches} pattern/control mismatch${mismatches === 1 ? "" : "es"}`,
+    );
+  return phrases;
+}
+
+function joinList(items: string[]): string {
+  if (items.length === 0) return "";
+  if (items.length === 1) return items[0];
+  if (items.length === 2) return `${items[0]} and ${items[1]}`;
+  return items.slice(0, -1).join(", ") + ", and " + items[items.length - 1];
+}
+
+function renderSummary(result: AnalysisResult): string {
+  const { config, pattern, boundaries, summary, recommendations } = result;
+  const lines: string[] = [];
+  lines.push(sectionLabel("summary"));
+
+  // Pattern sentence
+  const patternBase = pattern.label.split(" with ")[0];
+  const gloss = PATTERN_GLOSS[pattern.pattern] ?? "";
+  lines.push(
+    "  " +
+      C.white(`${pattern.pattern} ${patternBase}`) +
+      C.grey(" detected. ") +
+      C.grey(gloss),
+  );
+  lines.push("");
+
+  // Score sentence
+  const drag = scoreDragDownPhrases(result);
+  const dragSentence =
+    drag.length === 0
+      ? C.grey("with no significant deductions.")
+      : C.grey("dragged down by ") + C.white(joinList(drag)) + C.grey(".");
+  lines.push(
+    "  " +
+      C.grey("Architecture score ") +
+      C.white(`${summary.architectureScore.toFixed(1)}/10`) +
+      C.grey(" — ") +
+      dragSentence,
+  );
+  lines.push("");
+
+  // Per-boundary sentences
+  for (const b of boundaries) {
+    const strengthColor =
+      b.strength === "STRONG"
+        ? C.green
+        : b.strength === "MODERATE"
+          ? C.blueText
+          : C.red;
+    let tail: string;
+    if (b.enforcement === "architectural") {
+      const gate = findGateForBoundary(b.name, config.control.gates);
+      tail = gate
+        ? C.grey(`architectural via `) + C.white(gate) + C.grey(".")
+        : C.grey("architectural enforcement.");
+    } else if (b.enforcement === "prompt-only") {
+      tail = C.grey("prompt-only — promote to architectural to harden.");
+    } else {
+      tail = C.grey("no verifier — every commit is an unprotected proposal.");
+    }
+    lines.push(
+      "  " +
+        C.white(b.name) +
+        C.grey(" is ") +
+        strengthColor(b.strength) +
+        C.grey(", ") +
+        tail,
+    );
+  }
+
+  // Recommendations
+  if (recommendations.length > 0) {
+    lines.push("");
+    for (let i = 0; i < recommendations.length; i++) {
+      const r = recommendations[i];
+      const n = String(i + 1).padStart(2, "0");
+      lines.push("  " + C.grey(`Recommendation ${n}: `) + C.white(r.title) + C.grey("."));
+    }
+  }
+
   return lines.join("\n");
 }
 
@@ -295,11 +553,13 @@ export function renderTerminal(result: AnalysisResult): string {
   if (caution) sections.push(caution);
   sections.push(renderAgentBlock(result));
   sections.push(renderPattern(result));
+  sections.push(renderGateMap(result));
   sections.push(renderScore(result));
   sections.push(renderBoundaries(result));
   sections.push(renderPromptRules(result));
   sections.push(renderToolGraph(result));
   sections.push(renderRecommendations(result));
+  sections.push(renderSummary(result));
   sections.push(renderFooter(result));
   return sections.join("\n") + "\n";
 }
