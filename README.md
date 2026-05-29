@@ -97,6 +97,8 @@ npx sdb-sigma check --config sdb-sigma.config.yaml --json
 
 Running against `examples/brio-buyer.yaml`:
 
+![sdb-sigma check output](docs/screenshots/check-output.png)
+
 ```
   ░▒▓ SDB ▓▒░  sigma
   K<RMAN LABS
