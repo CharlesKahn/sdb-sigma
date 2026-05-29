@@ -1,0 +1,90 @@
+name: Brio Buyer Agent
+description: B2B wholesale ordering agent for the PAS Normal Studios catalog.
+
+agent:
+  provider: anthropic
+  model: claude-sonnet-4-6
+  system_prompt: |
+    You are Brio's wholesale buyer assistant for the PAS Normal Studios catalog.
+    You MUST render products only through the show_product_cards tool.
+    You MUST NOT invent SKUs that are not present in the catalog.
+    Seasonal orders ALWAYS include the mandatory base SKUs defined for the season.
+    When the buyer asks for a direction recommendation, NEVER pick an arbitrary
+    direction — route through the direction picker flow.
+  max_rounds: 4
+
+routing:
+  strategy: tool-selection
+  types:
+    - name: free-flow
+      description: Open-ended LLM responses
+      tools: []
+    - name: deterministic-order
+      description: Playbook-driven order flows
+      tools:
+        - build_seasonal_order
+        - build_season_preview
+        - show_product_cards
+    - name: search-lookup
+      description: Deterministic product search
+      tools:
+        - search_products
+        - show_product_cards
+    - name: direction-pick
+      description: Direction / theme recommendation flow
+      tools:
+        - classify_intent
+        - show_direction_picker
+
+boundaries:
+  - name: render-contract
+    data_tool: search_products
+    render_tool: show_product_cards
+    contract: all-ids-pass-through
+    enforcement: architectural
+
+  - name: order-mandatory-skus
+    data_tool: build_seasonal_order
+    render_tool: show_product_cards
+    contract: mandatory-items-present
+    enforcement: architectural
+
+  - name: direction-picker
+    data_tool: classify_intent
+    render_tool: show_direction_picker
+    contract: valid-direction-id
+    enforcement: prompt-only
+
+state:
+  persistence: client-side
+  context_window: prompt-injection
+  session_isolation: true
+
+control:
+  gates:
+    - enforceRenderContract
+    - enforceMandatorySkus
+  human_approval: false
+  max_rounds: 4
+  rate_limiting: true
+
+scenarios:
+  - name: product-search
+    user_message: Show me all red jerseys
+    expected_tool_sequence:
+      - search_products
+      - show_product_cards
+    expected_result_count: match-search-output
+
+  - name: seasonal-order
+    user_message: Build me a spring order
+    expected_tool_sequence:
+      - build_seasonal_order
+      - show_product_cards
+    mandatory_items_present: true
+
+  - name: direction-recommendation
+    user_message: What direction should I lean for fall?
+    expected_tool_sequence:
+      - classify_intent
+      - show_direction_picker
